@@ -7,14 +7,14 @@ M = get.community.matrix(graph)
 plot(eigen(M)$values)
 
 
+
+
+
 tmp = ldply(1:48, .parallel = TRUE, function(i) {
   graph = graph.connected(n, k, gtype = 'regular')
-  M = get.community.matrix(graph, beta0 = -2)
-  lev = max(Re(eigen(M)$values))
-  vars = mou.vars(M, C)
-  c(lev = lev, vars.sum = sum(vars), vars.max = sum(sqrt(diag(vars)))^2, syn = sum(vars) / sum(sqrt(diag(vars)))^2)
+  M = get.community.matrix(graph, beta0 = -2, beta1.max = 1, beta1.random.type = 'unif', inter.type = 'competition')
+  get.stability(M, C)
 })
-
 
 
 

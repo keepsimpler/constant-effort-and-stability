@@ -22,7 +22,7 @@ getDoParWorkers()  # get available Cores
 #' @return the connected graph or NULL
 #' @details .  
 #' @import igraph
-graph.connected <- function(s, k, gtype, maxtried = 100, expower = 2.5, ...) {
+get.graph.connected <- function(s, k, gtype, maxtried = 100, expower = 2.5, ...) {
   if (gtype == 'bipartite' && is.na(s[2])) {  # the bipartite graph need size of two groups of nodes
     warning('sizes of TWO groups of nodes should be designated. 
             we have assumed the size of second group equal to the size of first group.')
@@ -57,53 +57,110 @@ graph.connected <- function(s, k, gtype, maxtried = 100, expower = 2.5, ...) {
 #plot(G, layout = layout.bipartite)
 
 
-get.community.matrix <- function(graph, beta0 = 0, beta1.min = 0, beta1.max = 1) {
+#' @title assign interaction strength and interaction types for community matrix
+#' @param graph, generated networks
+#' @param beta0, intraspecific competition, used to decide the upper bound of local stability criteria
+#' @param beta1.min, beta1.max, beta1.random.type, parameters of distribution of interspecific interaction strengths
+#'        if random distribution type is 'norm', then [beta1.max] is SD of normal distribution
+#'        if random distribution type is 'unif', then [beta1.max] is the upper bound of uniform distribution
+#'        [beta1.min] which is the lower bound of uniform distribution, is conserved to equal 0
+#' @param inter.type, interaction types among species:
+#'        arbitrary, competition, mutualism, predatorprey, mixture
+get.community.matrix <- function(graph, beta0 = 0, beta1.min = 0, beta1.max = 1, beta1.random.type = 'norm', inter.type) {
   if (class(graph) == 'igraph') {  # if is a igraph object of package <igraph> 
     graph = as.matrix(get.adjacency(graph))
   }
   s = dim(graph)[1]  # number of nodes
   edges = sum(graph > 0)  # number of edges
-  B = graph
-  B[B > 0] = runif(edges, min = -beta1.max, max = beta1.max)
-  diag(B) = rep(beta0, s)  # assign the diagonal elements
-  B
+  M = graph
+  if (inter.type == 'arbitrary') {
+    if (beta1.random.type == 'norm')
+      M[M > 0] = rnorm(edges, mean = 0, sd = beta1.max)
+    else if (beta1.random.type == 'unif')
+      M[M > 0] = runif(edges, min = - beta1.max, max = beta1.max)
+  }
+  else if (inter.type == 'competition') {
+    if (beta1.random.type == 'norm')
+      M[M > 0] = - abs(rnorm(edges, mean = 0, sd = beta1.max))
+    else if (beta1.random.type == 'unif')
+      M[M > 0] = runif(edges, min = - beta1.max, max = 0)
+  }
+  else if (inter.type == 'mutualism') {
+    if (beta1.random.type == 'norm')
+      M[M > 0] = abs(rnorm(edges, mean = 0, sd = beta1.max))
+    else if (beta1.random.type == 'unif')
+      M[M > 0] = runif(edges, min = 0, max = beta1.max)
+  }
+  else if (inter.type == 'predatorprey') {
+    for (i in 1:s) {
+      for (j in (i + 1) : s) {
+        if (M[i, j] > 0) {  # if interaction exist
+          if (sample(c(0, 1), 1) == 0) { # half probability
+            if (beta1.random.type == 'norm') {
+              M[i, j] = abs(rnorm(1, mean = 0, sd = beta1.max))
+              M[j, i] = - abs(rnorm(1, mean = 0, sd = beta1.max))              
+            }
+            else if (beta1.random.type == 'unif') {
+              M[i, j] = runif(edges, min = 0, max = beta1.max)
+              M[j, i] = runif(edges, min = - beta1.max, max = 0)
+            }
+          }
+          else {
+            if (beta1.random.type == 'norm') {
+              M[i, j] = - abs(rnorm(1, mean = 0, sd = beta1.max))
+              M[j, i] = abs(rnorm(1, mean = 0, sd = beta1.max))                          
+            }
+            else if (beta1.random.type == 'unif') {
+              M[i, j] = runif(edges, min = - beta1.max, max = 0)
+              M[j, i] = runif(edges, min = 0, max = beta1.max)
+            }
+          }
+        }
+      }
+    }
+  }  # end of predatorprey
+  diag(M) = rep(beta0, s)  # assign the diagonal elements
+  M
 }
 
 
 
 #' @title get covariance matrix of multivariate OU process
+#' @param phi, community matrix
+#' @param C, the covariance matrix of environmental fluctuating
 mou.vars <- function(phi, C) {
   s = dim(phi)[1]
   I = diag(1, s)
   - matrix(solve(kronecker(I, phi) + kronecker(phi, I)) %*% as.vector(C), nrow = s, ncol = s)
 }
 
-get.vars.sum.and.syn <- function(vars) {
-  c(vars.sum = sum(vars), vars.max = sum(sqrt(diag(vars)))^2, syn = sum(vars) / sum(sqrt(diag(vars)))^2)
+get.stability <- function(phi, C) {
+  n = dim(phi)[1]
+  eigs = eigen(phi)$values
+  lev = max(Re(eigs))  # largest eigenvalue
+  sev = max(Re(eigs))  # smallest eigenvalue
+  sndev = sort(Re(eigs))[n - 1]  # second largest eigenvalue
+  syn.eig = sev / sndev  # spectral gap between the second and smallest eigenvalue as sign of synchronization
+  
+  vars = mou.vars(phi, C)
+  vars.sum = sum(vars)
+  vars.max = sum(sqrt(diag(vars)))^2
+  syn = vars.sum / vars.max
+  
+  sensitivity = - solve(phi)  # sensitivity matrix is the negative inverse of community matrix
+  sens.sum = sum(sensitivity)
+  sens.self = diag(sensitivity)
+  sens.self.sum = sum(sens.self)
+  sens.other = diag(1/sens.self) %*% sensitivity
+  sens.other.sum = sum(sens.other)
+  
+  c(lev = lev, sev = sev, sndev = sndev, syn.eig = syn.eig, vars.sum = vars.sum, vars.max = vars.max, syn = syn,
+    sens.self.sum = sens.self.sum, sens.other.sum = sens.other.sum, sens.sum = sens.sum)
 }
 
 
 
 
-
-
-
-gen.random.matrix.constant.colsums <- function(n) {
-  M = matrix(runif(n * n, min = 0, max = 1), nrow = n, ncol = n)
-  M = M / rowSums(M)
-  M = t(M)
-}
-
-gen.random.matrix.constant.colsums.2 <- function(n) {
-  M = matrix(runif(n * n), nrow = n, ncol = n)
-  diag(M) = 0
-  M = M / rowSums(M)
-  M = t(M)
-}
-
-gen.random.matrix <- function(n) {
-  M = matrix(runif(n * n), nrow = n, ncol = n)
-}
 
 
 
