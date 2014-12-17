@@ -82,6 +82,30 @@ get.degree.hetero <- function(graph) {
 }
 
 
+#' @title generate random graphs with a level of modularity 
+#' @param n, number of vertices
+#' @param g, number of groups
+#' @param k, average degree
+#' @param q, modularity level
+get.graph.modularity <- function(n, g, k, q) {
+  k1 = g * g * k / (g + g * (g - 1) * q)
+  n1 = n / g
+  M = NULL
+  for (i in 1:g) {
+    M1 = NULL
+    for (j in 1:g) {
+      if (i == j) 
+        M2 = as.matrix(get.adjacency(erdos.renyi.game(n1, n1 * k1 / 2, type = 'gnm')))
+      else
+        M2 = as.matrix(get.adjacency(erdos.renyi.game(n1, n1 * k1 * q / 2, type = 'gnm')))
+      M1 = cbind(M1, M2)
+    }
+    M = rbind(M, M1)
+  }
+  M
+}
+
+
 
 
 ###############################################################################
@@ -161,13 +185,13 @@ get.community.matrix <- function(graph, beta0 = 0, beta1.min = 0, beta1.max = 1,
     if (beta1.random.type == 'norm')
       M[M > 0] = - abs(rnorm(edges, mean = 0, sd = beta1.max))
     else if (beta1.random.type == 'unif')
-      M[M > 0] = runif(edges, min = - beta1.max, max = 0)
+      M[M > 0] = runif(edges, min = - beta1.max, max = - beta1.min)
   }
   else if (inter.type == 'mutualism') {  # random matrix whose elements with positive half-normal or uniform distribution
     if (beta1.random.type == 'norm')
       M[M > 0] = abs(rnorm(edges, mean = 0, sd = beta1.max))
     else if (beta1.random.type == 'unif')
-      M[M > 0] = runif(edges, min = 0, max = beta1.max)
+      M[M > 0] = runif(edges, min = beta1.min, max = beta1.max)
   }
   else if (inter.type == 'predatorprey') {
     for (i in 1 : (s - 1)) {
@@ -179,8 +203,8 @@ get.community.matrix <- function(graph, beta0 = 0, beta1.min = 0, beta1.max = 1,
               M[j, i] = - abs(rnorm(1, mean = 0, sd = beta1.max))              
             }
             else if (beta1.random.type == 'unif') {
-              M[i, j] = runif(1, min = 0, max = beta1.max)
-              M[j, i] = runif(1, min = - beta1.max, max = 0)
+              M[i, j] = runif(1, min = beta1.min, max = beta1.max)
+              M[j, i] = runif(1, min = - beta1.max, max = - beta1.min)
             }
           }
           else {
@@ -189,8 +213,8 @@ get.community.matrix <- function(graph, beta0 = 0, beta1.min = 0, beta1.max = 1,
               M[j, i] = abs(rnorm(1, mean = 0, sd = beta1.max))                          
             }
             else if (beta1.random.type == 'unif') {
-              M[i, j] = runif(1, min = - beta1.max, max = 0)
-              M[j, i] = runif(1, min = 0, max = beta1.max)
+              M[i, j] = runif(1, min = - beta1.max, max = - beta1.min)
+              M[j, i] = runif(1, min = beta1.min, max = beta1.max)
             }
           }
         }
@@ -221,7 +245,7 @@ mou.vars <- function(phi, C) {
 #' @title get different stability measurements based on the community matrix and the environmental fluctuating covariance matrix
 #' @param phi, community matrix
 #' @param C, the covariance matrix of environmental fluctuating
-get.stability <- function(phi, C) {
+get.stability <- function(phi, C, r) {
   n = dim(phi)[1]
   eigs = eigen(phi)$values
   lev = max(Re(eigs))  # largest eigenvalue
@@ -243,37 +267,55 @@ get.stability <- function(phi, C) {
   sens.other.sum = sum(sens.other)
   sens.det = det(sensitivity)
   
+  nstar = get.nstar.from.community.matrix(phi, r)
+  
   c(lev = lev, sev = sev, sndev = sndev, syn.eig = syn.eig, vars.sum = vars.sum, vars.self.sum = vars.self.sum, vars.max = vars.max, syn = syn,
-    sens.self.sum = sens.self.sum, sens.other.sum = sens.other.sum, sens.sum = sens.sum, sens.det = sens.det)
+    sens.self.sum = sens.self.sum, sens.other.sum = sens.other.sum, sens.sum = sens.sum, sens.det = sens.det, nstar = nstar)
 }
 
 
-#' @title generate random graphs with a level of modularity 
-#' @param n, number of vertices
-#' @param g, number of groups
-#' @param k, average degree
-#' @param q, modularity level
-get.graph.modularity <- function(n, g, k, q) {
-  k1 = g * g * k / (g + g * (g - 1) * q)
-  n1 = n / g
-  M = NULL
-  for (i in 1:g) {
-    M1 = NULL
-    for (j in 1:g) {
-      if (i == j) 
-        M2 = as.matrix(get.adjacency(erdos.renyi.game(n1, n1 * k1 / 2, type = 'gnm')))
-      else
-        M2 = as.matrix(get.adjacency(erdos.renyi.game(n1, n1 * k1 * q / 2, type = 'gnm')))
-      M1 = cbind(M1, M2)
-    }
-    M = rbind(M, M1)
-  }
-  M
+## get stabilities by graphs which have different heteros and by variance of interaction strengths
+#' @param C, error variance-covariance matrix reflecting environmental fluctuations
+get.stabilities.by.graphs <- function(graphs, beta0 = -2, beta1.mean = 1, beta1.sds = NULL,
+                                      inter.type = 'competition', C, isfixed.colsums, r) {
+  if (is.null(beta1.sds)) beta1.sds = seq(0, beta1.mean, beta1.mean / 10)
+  ldply(beta1.sds, function(beta1.sd) {
+    ldply(graphs, .parallel = TRUE, function(graph) {
+      hetero = get.degree.hetero(graph)
+      print(paste(hetero, ',', beta1.sd))
+      beta1.min = beta1.mean - beta1.sd
+      beta1.max = beta1.mean + beta1.sd
+      M = get.community.matrix(graph, beta0 = beta0, beta1.min = beta1.min, beta1.max = beta1.max, beta1.random.type = 'unif',
+                               inter.type = inter.type, isfixed.colsums = isfixed.colsums)
+      if (max(Re(eigen(M)$values)) >= 0) warning('Not stable!')
+      c(get.stability(M, C, r), hetero = hetero, beta1.sd = beta1.sd)
+    })
+  })
 }
 
+#' @title get variance-covariance matrix that reflects environmental fluctuations
+#' @param n, number of species
+#' @param rho, correlations among sensitivities of species to environmental fluctuations
+get.env.flucs <- function(n, rho) {
+  C = matrix(rho, nrow = n, ncol = n)
+  diag(C) = 1
+  C
+}
 
-
-
+#' @title For the LV1 model, the species densities in equilibrium can be derived from the community matrix 
+#'        if the intrinsic growth rates are known
+get.nstar.from.community.matrix <- function(phi, r) {
+  n = length(r)
+  I = diag(1, n)
+  M = - solve(phi) %*% diag(r)
+  M = M - I
+  nstar = Null(t(M))
+  if (dim(nstar)[2] > 0)
+    nstar = c(nstar[, 1])
+  else
+    nstar = rep(0, n)
+  nstar
+}
 
 
 #' @title generate Correlated Random UNIFormly variables
